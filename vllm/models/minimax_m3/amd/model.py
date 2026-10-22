@@ -17,7 +17,6 @@ The MiniMax-M3-preview config selects a single set of branches:
       "index" attention branch.
 """
 
-import json
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
@@ -31,7 +30,6 @@ from vllm._aiter_ops import rocm_aiter_ops
 from vllm.compilation.breakable_cudagraph import eager_break_during_capture
 from vllm.config import (
     CacheConfig,
-    ModelConfig,
     VllmConfig,
     get_current_vllm_config,
 )
@@ -188,27 +186,6 @@ def _should_skip_index_topk(config: PreTrainedConfig, layer_id: int) -> bool:
         return False
     offset = int(getattr(config, "index_skip_topk_offset", 0) or 0)
     return max(ordinal - offset, 0) % freq != 0
-
-
-_INDEX_CACHE_KEYS = ("use_index_cache", "index_topk_freq", "index_skip_topk_offset")
-
-
-def _warn_index_cache_keys_outside_text_config(model_config: ModelConfig) -> None:
-    """Warn about IndexCache keys set on the outer config, where they are ignored."""
-    hf_config, text_config = model_config.hf_config, model_config.hf_text_config
-    misplaced = [
-        key
-        for key in _INDEX_CACHE_KEYS
-        if hasattr(hf_config, key) and not hasattr(text_config, key)
-    ]
-    if misplaced:
-        suggested = {"text_config": {k: getattr(hf_config, k) for k in misplaced}}
-        logger.warning_once(
-            "MiniMax-M3 reads IndexCache settings from text_config; ignoring "
-            "top-level %s. Pass them as --hf-overrides '%s'.",
-            ", ".join(misplaced),
-            json.dumps(suggested),
-        )
 
 
 def _is_moe_layer(config: PreTrainedConfig, layer_id: int) -> bool:
@@ -1801,7 +1778,6 @@ class MiniMaxM3SparseForConditionalGeneration(
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
         config = vllm_config.model_config.hf_config
-        _warn_index_cache_keys_outside_text_config(vllm_config.model_config)
         self.config = config
         self.quant_config = vllm_config.quant_config
         self.multimodal_config = vllm_config.model_config.multimodal_config

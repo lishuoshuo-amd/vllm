@@ -2,17 +2,16 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """MiniMax-M3 reads IndexCache settings from the text config only.
 
-``--hf-overrides`` is applied to the outer VL config, so the IndexCache keys
-must be nested under ``text_config`` to take effect.
+``--hf-overrides`` applies top-level keys to the outer VL config, so IndexCache
+keys there are rejected when the model config is built.
 """
+
+import re
 
 import pytest
 
 from vllm.config import ModelConfig
-from vllm.models.minimax_m3.amd.model import (
-    _should_skip_index_topk,
-    _warn_index_cache_keys_outside_text_config,
-)
+from vllm.models.minimax_m3.amd.model import _should_skip_index_topk
 from vllm.platforms import current_platform
 from vllm.transformers_utils.configs.minimax_m3 import MiniMaxM3Config
 
@@ -26,10 +25,7 @@ NUM_LAYERS = 12
 SPARSE_ATTENTION_FREQ = [0] * 3 + [1] * (NUM_LAYERS - 3)
 SKIPPED_LAYERS = [4, 5, 6, 8, 9, 10]
 INDEX_CACHE = {"use_index_cache": True, "index_topk_freq": 4}
-WARNING_PREFIX = (
-    "MiniMax-M3 reads IndexCache settings from text_config; ignoring top-level "
-)
-MODEL_LOGGER = "vllm.models.minimax_m3.amd.model"
+ERROR_PREFIX = "MiniMax-M3 reads IndexCache settings from text_config, so top-level "
 
 TEXT_CONFIG = dict(
     num_hidden_layers=NUM_LAYERS,
@@ -67,65 +63,46 @@ def _model_config(path, hf_overrides):
     )
 
 
-def _skipped_layers(model_config):
-    return [
-        layer_id
-        for layer_id in range(NUM_LAYERS)
-        if _should_skip_index_topk(model_config.hf_text_config, layer_id)
-    ]
-
-
-def _warnings(caplog_vllm):
-    return [
-        record.getMessage()
-        for record in caplog_vllm.records
-        if record.name == MODEL_LOGGER and record.levelname == "WARNING"
-    ]
-
-
 @pytest.mark.parametrize(
-    ("hf_overrides", "expected_warning"),
+    ("hf_overrides", "expected_error"),
     [
         (
             INDEX_CACHE,
-            WARNING_PREFIX + "use_index_cache, index_topk_freq. Pass them as "
-            "--hf-overrides "
+            ERROR_PREFIX + "use_index_cache, index_topk_freq would be ignored. "
+            "Pass them as --hf-overrides "
             '\'{"text_config": {"use_index_cache": true, "index_topk_freq": 4}}\'.',
         ),
         (
             {"use_index_cache": True, "index_topk_freq": 2},
-            WARNING_PREFIX + "use_index_cache, index_topk_freq. Pass them as "
-            "--hf-overrides "
+            ERROR_PREFIX + "use_index_cache, index_topk_freq would be ignored. "
+            "Pass them as --hf-overrides "
             '\'{"text_config": {"use_index_cache": true, "index_topk_freq": 2}}\'.',
         ),
         (
             {"index_skip_topk_offset": 1},
-            WARNING_PREFIX + "index_skip_topk_offset. Pass them as --hf-overrides "
+            ERROR_PREFIX + "index_skip_topk_offset would be ignored. "
+            "Pass them as --hf-overrides "
             '\'{"text_config": {"index_skip_topk_offset": 1}}\'.',
         ),
         (
             {"use_index_cache": True, "text_config": {"index_topk_freq": 2}},
-            WARNING_PREFIX + "use_index_cache. Pass them as --hf-overrides "
+            ERROR_PREFIX + "use_index_cache would be ignored. "
+            "Pass them as --hf-overrides "
             '\'{"text_config": {"use_index_cache": true}}\'.',
         ),
     ],
     ids=["freq4", "freq2", "offset_only", "mixed"],
 )
-def test_top_level_overrides_are_ignored_and_warned(
-    vl_checkpoint, caplog_vllm, hf_overrides, expected_warning
-):
-    model_config = _model_config(vl_checkpoint, hf_overrides)
-
-    _warn_index_cache_keys_outside_text_config(model_config)
-
-    assert _skipped_layers(model_config) == []
-    assert _warnings(caplog_vllm) == [expected_warning]
+def test_top_level_overrides_are_rejected(vl_checkpoint, hf_overrides, expected_error):
+    with pytest.raises(ValueError, match=re.escape(expected_error)):
+        _model_config(vl_checkpoint, hf_overrides)
 
 
-def test_text_config_overrides_take_effect(vl_checkpoint, caplog_vllm):
+def test_text_config_overrides_take_effect(vl_checkpoint):
     model_config = _model_config(vl_checkpoint, {"text_config": INDEX_CACHE})
 
-    _warn_index_cache_keys_outside_text_config(model_config)
-
-    assert _skipped_layers(model_config) == SKIPPED_LAYERS
-    assert _warnings(caplog_vllm) == []
+    assert [
+        layer_id
+        for layer_id in range(NUM_LAYERS)
+        if _should_skip_index_topk(model_config.hf_text_config, layer_id)
+    ] == SKIPPED_LAYERS
